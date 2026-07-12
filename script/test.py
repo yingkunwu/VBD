@@ -3,7 +3,7 @@ import glob
 import pickle
 import torch
 import csv
-import mediapy
+import imageio
 import argparse
 import numpy as np
 from tqdm import tqdm
@@ -20,6 +20,7 @@ jax.config.update('jax_platform_name', 'cpu')
 from vbd.data.dataset import WaymaxTestDataset
 from vbd.model.utils import set_seed
 from vbd.sim_agent.sim_actor import VBDTest, sample_to_action
+from vbd.sim_agent.guidance_metrics.overlap_metric import OverlapReward, OverlapRewardSimple
 from vbd.waymax_visualization.plotting import plot_state
 
 # waymax
@@ -107,8 +108,25 @@ def run_simulation(args):
     ## Load model
     vbd = VBDTest.load_from_checkpoint(args.model_path, args.device)
     vbd.reset_agent_length(N_SIM_AGENTS)
+
+    # Enable collision-avoidance guidance during diffusion sampling.
+    if args.use_guidance:
+        if args.test_mode != 'diffusion':
+            raise ValueError("--use_guidance only works with --test_mode diffusion")
+        reward = OverlapRewardSimple if args.simple_overlap else OverlapReward
+        vbd.reward_func = [reward(clip=args.overlap_clip, weight=1.0)]
+        vbd.guidance_func = vbd.guidance
+        vbd.guidance_iter = args.guidance_iter
+        vbd.guidance_start = 99
+        vbd.guidance_end = 1
+        vbd.gradient_scale = args.gradient_scale
+        vbd.scale_grad_by_std = True
+        print(f"Collision-avoidance guidance enabled "
+              f"(scale={args.gradient_scale}, iter={args.guidance_iter}, "
+              f"reward={reward.__name__})")
+
     vbd.eval()
-    set_seed(args.seed)  
+    set_seed(args.seed)
     
     # Load testing scenarios
     config = DatasetConfig(
@@ -202,8 +220,8 @@ def run_simulation(args):
             with open(os.path.join(SAVE_PATH, f'{scenario_id}_sim.pkl'), 'wb') as f:
                 pickle.dump(state.sim_trajectory, f)
 
-            with mediapy.set_show_save_dir(SAVE_PATH):
-                mediapy.show_video(sim_images, title=f'{scenario_id}', fps=10)
+            video_path = os.path.join(SAVE_PATH, f'{scenario_id}.mp4')
+            imageio.mimwrite(video_path, sim_images, fps=10, macro_block_size=None)
 
 
 if __name__ == '__main__':
@@ -215,6 +233,16 @@ if __name__ == '__main__':
     parser.add_argument('--replan', type=int, default=10, help='Replan frequency')
     parser.add_argument('--test_mode', type=str, default='diffusion')
     parser.add_argument('--save_simulation', action='store_true')
+    parser.add_argument('--use_guidance', action='store_true',
+                        help='Enable collision-avoidance (overlap) guidance during diffusion sampling')
+    parser.add_argument('--gradient_scale', type=float, default=0.1,
+                        help='Guidance gradient scale; higher = stronger agent separation')
+    parser.add_argument('--guidance_iter', type=int, default=5,
+                        help='Number of guidance optimization iterations per diffusion step')
+    parser.add_argument('--overlap_clip', type=float, default=5.0,
+                        help='Distance (m) beyond which overlap reward is ignored')
+    parser.add_argument('--simple_overlap', action='store_true',
+                        help='Use faster center-distance overlap reward instead of exact box geometry')
 
     args = parser.parse_args()
     run_simulation(args)

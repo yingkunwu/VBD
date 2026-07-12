@@ -2,7 +2,7 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 # disable GPU
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-
+os.environ["JAX_PLATFORMS"] = "cpu"
 import tensorflow as tf
 # set tf to cpu only
 tf.config.set_visible_devices([], 'GPU')
@@ -20,7 +20,7 @@ from waymax import dataloader
 from waymax.config import DataFormat
 import functools
 
-MAX_NUM_OBJECTS = 64
+MAX_NUM_OBJECTS = 256
 MAX_POLYLINES = 256
 MAX_TRAFFIC_LIGHTS = 16
 CURRENT_INDEX = 10
@@ -82,7 +82,7 @@ def data_process(
 
         with open(scenario_filename, 'wb') as f:
             pickle.dump(data_dict, f)
-        
+
 
 if __name__ == '__main__': 
     # add arguments
@@ -106,7 +106,7 @@ if __name__ == '__main__':
             dataset (str): Name of the dataset to process.
             save_raw (bool, optional): Whether to save the raw scenario data. Defaults to False.
         """
-        data_files = glob.glob(args.data_dir+'/*')
+        data_files = glob.glob(args.data_dir+'/*')[:10]
         if args.only_raw:
             save_dir = os.path.join(args.save_dir, 'extracted')
         else:

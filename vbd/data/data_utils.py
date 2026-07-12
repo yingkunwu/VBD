@@ -1,3 +1,6 @@
+import os
+os.environ.setdefault("JAX_PLATFORMS", "cpu")  # force JAX to CPU in every (worker) process
+
 import tensorflow as tf
 import torch
 from waymax import dataloader

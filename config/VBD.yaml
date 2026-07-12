@@ -16,7 +16,7 @@ project: null
 init_from: null
 
 # Model Config
-agents_len: 32
+agents_len: 64
 future_len: 80
 action_len: 2
 encoder_layers: 6

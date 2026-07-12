@@ -144,7 +144,8 @@ def plot_trajectory(
     show_colorbar: bool = False,
     past_traj_length: int = 0,
     is_ego = None,
-    is_adv = None
+    is_adv = None,
+    valid_override = None,
 ) -> None:
   """Plots a Trajectory with different color for controlled and context.
 
@@ -168,6 +169,7 @@ def plot_trajectory(
   traj_5dof = np.array(
       traj.stack_fields(['x', 'y', 'length', 'width', 'yaw'])
   )  # Forces to np from jnp
+  valid = np.asarray(traj.valid) if valid_override is None else np.asarray(valid_override)
 
   num_obj, num_steps, _ = traj_5dof.shape
   if time_idx is not None:
@@ -179,7 +181,7 @@ def plot_trajectory(
   # Adds id if needed.
   if indices is not None and time_idx is not None:
     for i in range(num_obj):
-      if not traj.valid[i, time_idx]:
+      if not valid[i, time_idx]:
         continue
       ax.text(
           traj_5dof[i, time_idx, 0] - 2,
@@ -190,7 +192,7 @@ def plot_trajectory(
           fontsize = 14,
       )
 
-  _plot_bounding_boxes(ax, traj_5dof, time_idx, is_controlled, traj.valid, is_ego, is_adv)  # pytype: disable=wrong-arg-types  # jax-ndarray
+  _plot_bounding_boxes(ax, traj_5dof, time_idx, is_controlled, valid, is_ego, is_adv)  # pytype: disable=wrong-arg-types  # jax-ndarray
 
 
   # Plot history of controlled agents
@@ -208,7 +210,7 @@ def plot_trajectory(
     plot_traj_with_speed(
       trajs = valid_xy,
       speeds = valid_speed,
-      valids = traj.valid[is_controlled, start_idx:time_idx],
+      valids = valid[is_controlled, start_idx:time_idx],
       ax = ax,
       v_min = 0, #np.floor(valid_speed.min()),
       v_max = 20, #np.ceil(valid_speed.max()),

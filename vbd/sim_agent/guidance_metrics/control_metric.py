@@ -24,5 +24,3 @@ class ControlReward(nn.Module):
         cost = cost * mask[..., None]
 
         return -cost
-        
-        

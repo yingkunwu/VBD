@@ -4,6 +4,7 @@ import datetime
 import argparse
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ.setdefault("JAX_PLATFORMS", "cpu")  # force JAX to CPU (inherited by DataLoader workers)
 
 # set tf to cpu only
 import tensorflow as tf

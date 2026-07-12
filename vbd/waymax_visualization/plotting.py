@@ -21,21 +21,47 @@ def plot_state(
     traj_color = 'r',
     is_ego = None,
     is_adv = None,
+    highlight_mask = None,
+    highlight_color = (1.0, 0.55, 0.0),
+    hide_mask = None,
+    panel_title = None,
+    traj_override = None,
 ):
     viz_config = visualization.utils.VizConfig()
     fig, ax = visualization.utils.init_fig_ax(viz_config)
-    if log_traj:
+    if traj_override is not None:
+        traj = traj_override
+    elif log_traj:
         traj = current_state.log_trajectory
     else:
         traj = current_state.sim_trajectory
     indices = np.arange(traj.num_objects)
     is_controlled = current_state.object_metadata.is_controlled
+    valid_override = np.asarray(traj.valid).copy()
+    if hide_mask is not None:
+        valid_override[np.asarray(hide_mask, dtype=bool)] = False
 
     visualization.plot_trajectory(
         ax, traj, is_controlled, time_idx=current_state.timestep, 
         indices=indices, past_traj_length = past_traj_length,
         is_ego = is_ego, is_adv = is_adv,
+        valid_override=valid_override,
     )  # pytype: disable=wrong-arg-types  # jax-ndarray
+
+    # Overlay selected agents after the standard rendering so synthetic agents
+    # retain a distinct color even when they are diffusion-controlled.
+    if highlight_mask is not None:
+        highlight_mask = np.asarray(highlight_mask, dtype=bool)
+        visible = highlight_mask & valid_override[:, current_state.timestep]
+        boxes = np.stack([
+            np.asarray(traj.x[:, current_state.timestep]),
+            np.asarray(traj.y[:, current_state.timestep]),
+            np.asarray(traj.length[:, current_state.timestep]),
+            np.asarray(traj.width[:, current_state.timestep]),
+            np.asarray(traj.yaw[:, current_state.timestep]),
+        ], axis=-1)
+        visualization.plot_numpy_bounding_boxes(
+            ax, boxes[visible], color=np.asarray(highlight_color), alpha=1.0)
 
     # 2. Plots road graph elements.
     visualization.plot_roadgraph_points(ax, current_state.roadgraph_points, verbose=False)
@@ -64,6 +90,8 @@ def plot_state(
         t = (current_state.timestep-10)/10
     if font_size>0:
         ax.text(origin_x - 0.9*dx, origin_y + 0.9*dx, f"t={t:.1f} s", fontsize=font_size)
+    if panel_title:
+        ax.set_title(panel_title, fontsize=font_size)
     
     if tick_off:
         plt.tick_params(left = False, right = False , labelleft = False , 
@@ -93,7 +121,5 @@ def plot_state(
     if return_ax:
         return fig, ax
     return mediapy.resize_image(visualization.utils.img_from_fig(fig), img_size)
-
-
 
 

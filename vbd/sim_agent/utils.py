@@ -147,8 +147,13 @@ def sample_to_action(
     action_dim = sample.shape[-1]
     actions_array = np.zeros((max_num_objects, action_dim))
     
+    is_controlled = np.asarray(is_controlled, dtype=bool)
+
     if agents_id is None:
-        agents_id_full = np.arange(is_controlled.shape[0])
+        # Preserve the model-slot -> Waymax-object identity mapping, but do not
+        # emit actions for padding or agents that are not controlled this step.
+        agents_id_full = np.full(is_controlled.shape[0], -1, dtype=int)
+        agents_id_full[is_controlled] = np.flatnonzero(is_controlled)
     elif len(agents_id) == is_controlled.shape[0]:
         agents_id_full = agents_id
     elif len(agents_id) < is_controlled.shape[0]:
@@ -156,13 +161,15 @@ def sample_to_action(
         agents_id_full[is_controlled] = agents_id
     else:
         raise ValueError("Invalid agents_id size")
+    agents_id_full = np.asarray(agents_id_full, dtype=int)
     
     for i, id in enumerate(agents_id_full):
         if id >= 0:
             actions_array[id] = sample[i]
 
     actions_valid = np.zeros((max_num_objects, 1), dtype=bool)
-    actions_valid[agents_id] = True
+    controlled_ids = agents_id_full[agents_id_full >= 0]
+    actions_valid[controlled_ids] = True
     actions_valid = jnp.asarray(actions_valid)
     
     actions = datatypes.Action(data=jnp.asarray(actions_array), valid=actions_valid)
@@ -241,4 +248,3 @@ def stack_dict(input: list):
             output[key] = value
     
     return output   
-
