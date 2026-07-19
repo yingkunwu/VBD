@@ -29,9 +29,16 @@ Each generated scene is written as `--out_dir/scenario_<scenario_id>.json` using
 the same schema as `prepare_waymo.py`, plus optionally an `.mp4` render and a
 `_sim.pkl` of the collision-cleaned Waymax sim trajectory.
 
-To launch multiple shard processes with GNU parallel, use the lightweight launcher:
+A scenario whose artifacts are all present in `--out_dir` is skipped, so an
+interrupted run is resumed by relaunching the same command. Pass `--overwrite`
+to regenerate them instead.
 
-    python script/main_generate.py ... --jobs 4 -- --video
+Point `--waymo_path` at a directory of TFRecord shards to generate across the
+whole dataset in a single process on one GPU (the model loads once and one CUDA
+context lives for the entire run):
+
+    python script/generate.py --model_path <ckpt.ckpt> \
+        --waymo_path /mnt/sdb/waymo/training --num_scenes -1 --video
 """
 
 import os
@@ -755,6 +762,56 @@ def _json_agent_ids(metadata, synthetic_agents, num_agents):
     return result
 
 
+def scenario_output_paths(scenario_id, out_dir, args):
+    """Every artifact this run is expected to write for one scenario."""
+    paths = [os.path.join(out_dir, "json", f"scenario_{scenario_id}.json")]
+    if args.video:
+        paths.append(os.path.join(out_dir, "debug", f"{scenario_id}.mp4"))
+    if args.save_sim:
+        paths.append(os.path.join(out_dir, f"{scenario_id}_sim.pkl"))
+    return paths
+
+
+def _json_is_complete(path):
+    """A JSON dump cut short mid-write does not end with its closing brace."""
+    try:
+        with open(path, 'rb') as f:
+            f.seek(-1, os.SEEK_END)
+            return f.read(1) == b'}'
+    except OSError:
+        return False
+
+
+def scenario_is_generated(scenario_id, out_dir, args):
+    """True when every artifact for this scenario already exists and is intact."""
+    for path in scenario_output_paths(scenario_id, out_dir, args):
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            return False
+        if path.endswith(".json") and not _json_is_complete(path):
+            return False
+    return True
+
+
+def _write_atomic(path, write):
+    """Write through a temp file so an interrupt never leaves a partial artifact.
+
+    The temp marker is a filename *prefix*, not a second extension: imageio picks
+    its video backend from the extension and some versions match the compound
+    suffix, so `<id>.partial.mp4` is read as `.partial` (no backend).  A prefixed
+    `.partial-<id>.mp4` keeps `.mp4` as the sole extension.  `scenario_is_generated`
+    only matches the final names, so a leftover temp is never mistaken for done.
+    """
+    directory, name = os.path.split(path)
+    tmp = os.path.join(directory, f".partial-{os.getpid()}-{name}")
+    try:
+        write(tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
 def _ego_index(metadata, scenario_id=None):
     is_sdc = np.asarray(metadata.is_sdc).reshape(-1)
     ego_indices = np.flatnonzero(is_sdc)
@@ -814,9 +871,12 @@ def save_scene(scenario_id, log_states, original_log_trajectory,
         "ego_idx": ego_idx,
         "source_file": args.waymo_path,
     }
+    def _dump_json(path):
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(json_data, f, indent=2)
+
     json_path = os.path.join(out_dir, "json", f"scenario_{scenario_id}.json")
-    with open(json_path, 'w', encoding='utf-8') as f:
-        json.dump(json_data, f, indent=2)
+    _write_atomic(json_path, _dump_json)
 
     if args.save_sim:
         clean_traj = copy.deepcopy(traj_final)
@@ -828,8 +888,12 @@ def save_scene(scenario_id, log_states, original_log_trajectory,
             values[removed_collision_agents] = 0.0
             setattr(clean_traj, field, values)
         clean_traj.valid = full_valid
-        with open(os.path.join(out_dir, f"{scenario_id}_sim.pkl"), 'wb') as f:
-            pickle.dump(clean_traj, f)
+
+        def _dump_sim(path):
+            with open(path, 'wb') as f:
+                pickle.dump(clean_traj, f)
+
+        _write_atomic(os.path.join(out_dir, f"{scenario_id}_sim.pkl"), _dump_sim)
 
     saved = [json_path]
 
@@ -852,7 +916,8 @@ def save_scene(scenario_id, log_states, original_log_trajectory,
                 panel_title="Cleaned")
             frames.append(np.concatenate([original, diffusion, cleaned], axis=1))
         video_path = os.path.join(out_dir, "debug", f"{scenario_id}.mp4")
-        imageio.mimwrite(video_path, frames, fps=args.fps, macro_block_size=None)
+        _write_atomic(video_path, lambda path: imageio.mimwrite(
+            path, frames, fps=args.fps, macro_block_size=None))
         saved.append(video_path)
 
     print("  saved " + ", ".join(saved))
@@ -993,9 +1058,21 @@ def generate(args):
     os.makedirs(os.path.join(args.out_dir, "debug"), exist_ok=True)
     runtime = _create_runtime(args, n_agents, device=args.device)
     generated = 0
+    resumed = 0
     for k, (scenario_id, scenario) in enumerate(data_iter):
         if k < args.scenario_index:
             continue
+
+        # Resume: a scenario whose artifacts are already on disk counts toward
+        # --num_scenes, so an interrupted run can simply be relaunched.
+        if not args.overwrite and scenario_is_generated(scenario_id, args.out_dir, args):
+            print(f"skip {scenario_id}: already generated")
+            generated += 1
+            resumed += 1
+            if target is not None and generated >= target:
+                break
+            continue
+
         n_present, n_peds = _scenario_stats(scenario)
         if not (n_present > args.min_agents or n_peds >= args.min_peds):
             print(f"skip {scenario_id}: {n_present} agents, {n_peds} pedestrians")
@@ -1009,7 +1086,8 @@ def generate(args):
         if target is not None and generated >= target:
             break
 
-    print(f"Done. Generated {generated} scene(s) -> {args.out_dir}")
+    print(f"Done. Generated {generated - resumed} new scene(s) "
+          f"({resumed} already on disk) -> {args.out_dir}")
 
 
 if __name__ == "__main__":
@@ -1076,6 +1154,9 @@ if __name__ == "__main__":
     parser.add_argument("--fps", type=int, default=10, help="Video frames per second")
     parser.add_argument("--save_sim", action="store_true",
                         help="Also pickle the collision-cleaned Waymax sim trajectory")
+    parser.add_argument("--overwrite", action="store_true",
+                        help="Regenerate scenarios whose outputs already exist in --out_dir "
+                             "(default: skip them, so an interrupted run can be resumed)")
 
     # Misc
     parser.add_argument("--device", type=str, default="cuda")

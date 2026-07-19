@@ -1,9 +1,10 @@
-python script/main_generate.py \
-  --model_path VBD_20260704174201/epoch=02.ckpt \
+python script/generate.py \
+  --model_path VBD_20260711071144/epoch=04.ckpt \
   --waymo_path /mnt/sdb/waymo/training \
-  --out_dir /mnt/sda/waymo/synth \
-  --jobs 1 \
-  -- \
+  --out_dir /mnt/sda/waymo/synth2 \
+  --device cuda:0 \
+  --num_scenes -1 \
   --video \
   --max_agents 128 \
-  --synthetic_ratio 0.25
+  --synthetic_ratio 0.25 \
+  --scenario_index 10000
